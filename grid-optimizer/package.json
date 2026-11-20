@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "breakpoints": "node scripts/breakpoints.mjs",
-    "abtest": "node scripts/abtest.mjs"
+    "abtest": "node scripts/abtest.mjs",
+    "check-node": "node -p \"process.version + ' | ' + process.execPath\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",

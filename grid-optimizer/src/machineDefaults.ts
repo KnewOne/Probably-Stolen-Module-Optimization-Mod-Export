@@ -3,7 +3,7 @@ import { t, plural } from './i18n';
 //   Furnace          - Performance has no impact; Quality raises ingot purity
 //   Desequencer      - Quality N/A; Performance = work per day
 //   Alarm System     - Quality N/A; Performance = theft prevention
-//   AgeWell          - Performance only changes energy use (like Efficiency); Quality = extra aging
+//   AgeWell (modded) - Performance and Quality both set aging, (1 + floor(P / 100)) x (1 + floor(Q / 50)) a night; only Efficiency lowers energy use
 //   Moisture Farm, Water Purifier, Mirage Projector - both Performance and Quality matter
 //   Full release (from the game code): Hydroponic System, DNA Manipulator, 3D Printer and Evaporator use both; the Deal Maker's
 //   Performance only lowers its energy use (like the AgeWell), Quality raises the accept chance on a haggle
@@ -15,7 +15,7 @@ const IGNORED_BY_TYPE: [string, StatFlags][] = [
     ['furnace', { Performance: true, Quality: false, Efficiency: false }],
     ['desequencer', { Performance: false, Quality: true, Efficiency: true }],
     ['alarm', { Performance: false, Quality: true, Efficiency: true }],
-    ['agewell', { Performance: true, Quality: false, Efficiency: true }],
+    ['agewell', { Performance: false, Quality: false, Efficiency: true }],
     ['deal maker', { Performance: true, Quality: false, Efficiency: true }],
 ];
 
@@ -65,7 +65,8 @@ export const defaultMaximizeStats = (ignored: StatFlags): StatFlags => ({
 //                    SetPurityFromInput): 2 x ores / inputs, rounded down, steps above Low - so two inputs: no ore Low, one Fair, two High;
 //                    with Blast's three inputs: one ore or none Low, two Fair, three High. Each stage is one step up (Very low, Low, Fair,
 //                    High, Very high, Perfect), capped at Perfect
-//   AgeWell        - every 125% ages the wine one more day per night (only multiples of 125 matter)
+//   AgeWell        - modded: aging a night is (1 + floor(Performance / 100)) x (1 + floor(Quality / 50)), so only every full 100% of
+//                    Performance and every full 50% of Quality matter (a negative one counts as 0)
 //   Desequencer    - Performance: 33 + (33 * P) / 100 work a day (MachineProgressHelper); a keycard takes whole days, so only the cut-offs
 //                    where some chipset's card finishes a day sooner matter. Checked against the game: the guide's 90% for Security in 2 days is 91%
 // `short` is the chip label where space is tight
@@ -95,6 +96,20 @@ const furnaceBreakpoints = (hasBlast: boolean): StatBreakpoint[] => {
     }))];
 };
 
+/* AgeWell (modded): aging a night = (1 + floor(Performance / 100)) x (1 + floor(Quality / 50)). Each stat is a factor that steps up at
+ * every full `per` of it (negative counts as 0, as the game's own 1 + max(0, Quality) / 125 does), so a card lists the factor it
+ * gives. 100% Performance + 50% Quality = 2 x 2 = 4; 200% + 50% = 3 x 2 = 6; 200% + 100% = 3 x 3 = 9
+ */
+const AGEWELL_STEPS = 8;
+const agingFactor = (value: number, per: number) => 1 + Math.floor(Math.max(0, value) / per);
+export const agewellAging = (performance: number, quality: number) => agingFactor(performance, 100) * agingFactor(quality, 50);
+const agewellSteps = (per: number, stat: string): StatBreakpoint[] => Array.from({ length: AGEWELL_STEPS }, (_, i) => i + 1).map(step => ({
+    value: step * per,
+    label: t('×{n}', { n: step + 1 }),
+    short: t('×{n}', { n: step + 1 }),
+    hint: t('{stat} factor {n}: aging a night is {n} × the other stat\'s factor', { stat: t(stat), n: step + 1 }),
+}));
+
 const QUALITY_BREAKPOINTS: [string, (hasBlast: boolean) => StatBreakpoint[]][] = [
     ['moisture farm', () => [
         { value: 0, label: t('Ghostwater'), short: t('Ghost'), hint: t('96-98% water. Pitcher: 75% high-quality, 25% basewater') },
@@ -112,13 +127,8 @@ const QUALITY_BREAKPOINTS: [string, (hasBlast: boolean) => StatBreakpoint[]][] =
         { value: 200, label: t('100% water'), short: t('100%'), hint: t('Cleans out every contaminant: 100% water') },
     ]],
     ['furnace', furnaceBreakpoints],
-    // No cap in the game (MachineWineRack.GetAgingDays: 1 + max(0, Quality) / 125); listed up to +8, 1000%
-    ['agewell', () => [1, 2, 3, 4, 5, 6, 7, 8].map(extra => ({
-        value: extra * 125,
-        label: t('+{n} day{s}', { n: extra, s: plural(extra) }),
-        short: t('+{n}d', { n: extra }),
-        hint: t('Wine ages {n} days per night instead of 1', { n: extra + 1 }),
-    }))],
+    // Modded AgeWell: Quality's factor steps up every full 50%
+    ['agewell', () => agewellSteps(50, 'Quality')],
 ];
 
 // Work per chipset: 75 Service/Supply, 100 Engineering/Medical, 125 Security, 150 Command
@@ -135,6 +145,8 @@ const DESEQUENCER_CUTOFFS: [number, [number, number][]][] = [
     [355, [[150, 1]]],
 ];
 const PERFORMANCE_BREAKPOINTS: [string, () => StatBreakpoint[]][] = [
+    // Modded AgeWell: Performance's factor steps up every full 100%
+    ['agewell', () => agewellSteps(100, 'Performance')],
     ['desequencer', () => DESEQUENCER_CUTOFFS.map(([value, cards]) => ({
         value,
         label: cards.map(([work, days]) => t('{work} in {days}d', { work, days })).join(', '),
@@ -210,21 +222,23 @@ export const mirageSumFor = (points: number) => Math.max(0, (points - MIRAGE_BAS
 export const miragePointsFor = (sum: number) => MIRAGE_BASE_POINTS + Math.max(0, Math.floor((sum - MIRAGE_SUM_MARGIN) / MIRAGE_SUM_PER_POINT));
 
 /* Stats where nothing below the first breakpoint counts, checked against the game: Furnace stages = Quality / 100 (0 below 100),
- * AgeWell days = max(0, Quality) / 125 + 1, Water Purifier cap 99% for all Quality under 15. Not the Moisture Farm (Rust and
- * Gutterflow below 0) or the Desequencer (negative Performance works slower)
+ * modded AgeWell factors = 1 + max(0, stat) / 100 (Performance) or / 50 (Quality), Water Purifier cap 99% for all Quality under 15. Not
+ * the Moisture Farm (Rust and Gutterflow below 0) or the Desequencer (negative Performance works slower)
  */
 export const worthlessBelowSteps = (machineType: string): Partial<Record<'Performance' | 'Quality' | 'Efficiency', boolean>> => {
     const name = (machineType.split(' > ').pop() || '').toLowerCase();
-    return ['furnace', 'agewell', 'water purifier'].some(k => name.includes(k)) ? { Quality: true } : {};
+    return name.includes('agewell') ? { Performance: true, Quality: true }
+        : ['furnace', 'water purifier'].some(k => name.includes(k)) ? { Quality: true } : {};
 };
 
 export const isAgeWell = (machineType: string) => (machineType.split(' > ').pop() || '').toLowerCase().includes('agewell');
 export const isEvaporator = (machineType: string) => (machineType.split(' > ').pop() || '').toLowerCase().includes('evaporator');
-// Machines whose Performance only lowers their energy use, exactly as Efficiency does: the AgeWell (both at ratio 2) and the Deal Maker
-// (MachineDealMaker.UpdatePowerUse: 25 - 25 * (Efficiency + Performance) / 100)
+// Machines whose Performance only lowers their energy use, exactly as Efficiency does: the Deal Maker
+// (MachineDealMaker.UpdatePowerUse: 25 - 25 * (Efficiency + Performance) / 100). Not the modded AgeWell: its Performance sets aging
+// and only Efficiency lowers its energy
 export const sumsPE = (machineType: string) => {
     const name = (machineType.split(' > ').pop() || '').toLowerCase();
-    return name.includes('agewell') || name.includes('deal maker');
+    return name.includes('deal maker');
 };
 
 /* Stats that get no card of their own: the ones with no effect, and Performance on a sumsPE machine, which only lowers its energy use
@@ -244,9 +258,9 @@ const STAT_EFFECTS: [string, 'Performance' | 'Quality' | 'Efficiency', string][]
     ['furnace', 'Performance', 'No effect'],
     ['furnace', 'Quality', 'Ingot purity: one stage up per full 100% (Blast module: one stage less)'],
     ['furnace', 'Efficiency', 'Energy use: 8 a day, 1 less per full 12.5%'],
-    ['agewell', 'Performance', 'Energy use, the same as Efficiency (both are on the Efficiency card)'],
-    ['agewell', 'Quality', 'Aging: one more day per night for every full 125%'],
-    ['agewell', 'Efficiency', 'Energy use: 24 a day, 1 less per ~8.3% of Efficiency and Performance together'],
+    ['agewell', 'Performance', 'Aging factor: 1 + 1 per full 100% (aging a night = Performance factor x Quality factor)'],
+    ['agewell', 'Quality', 'Aging factor: 1 + 1 per full 50% (aging a night = Performance factor x Quality factor)'],
+    ['agewell', 'Efficiency', 'Energy use: 24 a day, 1 less per ~8.3% of Efficiency'],
     ['mirage', 'Performance', 'Attractiveness: 100 points, +1 per 4% (with Quality)'],
     ['mirage', 'Quality', 'Attractiveness: 100 points, +1 per 2% (with Performance)'],
     ['mirage', 'Efficiency', 'Energy use: 16 a day, 1 less per full 6.25%'],
@@ -325,7 +339,8 @@ const STAT_NAMES: [string, 'Performance' | 'Quality' | 'Efficiency', string][] =
     ['water purifier', 'Performance', 'Removal'],
     ['water purifier', 'Quality', 'Purity'],
     ['furnace', 'Quality', 'Ingot purity'],
-    ['agewell', 'Quality', 'Extra aging'],
+    ['agewell', 'Performance', 'Aging (Performance)'],
+    ['agewell', 'Quality', 'Aging (Quality)'],
     ['desequencer', 'Performance', 'Work speed'],
     ['alarm', 'Performance', 'Theft prevention'],
     ['hydroponic', 'Performance', 'Growth speed'],
@@ -379,10 +394,10 @@ type Totals = { Performance: number; Quality: number; Efficiency: number };
 /* Energy per day, as the game computes it (ModuleHelper.ApplyBasicModuleEffect, checked against the decompiled game):
  *   energy = base - (base * Efficiency) / 100                       integer division, truncating toward zero
  *   with an efficiency ratio r:   (int)(base - ((base * E) / r) / 100)
- *   machines whose Performance reduces power (AgeWell) then add   (int)(((base * P) / pr) / -100)
+ *   machines whose Performance reduces power (Deal Maker) then add   (int)(((base * P) / pr) / -100)
  *   and never below 1
- * So a 4-energy machine saves one per full 25%, and the AgeWell (base 24, both ratios 2) saves one at 1%, 9%, 17%... of Efficiency
- * and one per full 8.33% of Performance; negative Efficiency costs nothing until the next full step
+ * So a 4-energy machine saves one per full 25%, and the AgeWell (base 24, efficiency ratio 2) saves one at 1%, 9%, 17%... of Efficiency;
+ * negative Efficiency costs nothing until the next full step
  */
 type EnergyRule = { base: number; effRatio?: number; perfRatio?: number };
 const trunc = (v: number) => (v < 0 ? Math.ceil(v) : Math.floor(v));
@@ -454,8 +469,11 @@ export type StatKey3 = 'Performance' | 'Quality' | 'Efficiency';
 export type StatJob = { key: string; name: string; steps: Partial<Record<StatKey3, StatBreakpoint[]>> };
 export const machineJobKey = (machineId: string) => `optimizer_job_${machineId}`;
 
-// Floor below standard 8
-const DAY_STEPS_FLOOR = -200;
+// The lowest Performance the day steps reach down to: a job's slowest step is held to the least Performance that still takes its days
+const DAY_STEPS_FLOOR = -100;
+// The least Performance for each whole day less a job of `work` takes, the slowest first. The slowest step is the days the job takes
+// at no Performance, and its value is the least Performance that still takes them (Bloomberry regrowth, 12 work: 2 days from -50%, where
+// 6 work a day still finishes it), not 0, so a target at that step leaves the machine room to trade Performance for Quality
 const daySteps = (work: number, speed: (pct: number) => number, job: string): StatBreakpoint[] => {
     const out: StatBreakpoint[] = [];
     let days = Infinity;
@@ -755,7 +773,8 @@ const STAT_UNITS: [string, 'Performance' | 'Quality' | 'Efficiency', StatUnit][]
     ['water purifier', 'Efficiency', energyUnit({ base: 4 })],
     ['furnace', 'Efficiency', energyUnit({ base: 8 })],
     ['desequencer', 'Efficiency', energyUnit({ base: 10 })],
-    ['agewell', 'Efficiency', combinedEnergyUnit({ base: 24, effRatio: 2, perfRatio: 2 })],
+    // Modded AgeWell: Efficiency alone (its Performance sets aging, not energy)
+    ['agewell', 'Efficiency', energyUnit({ base: 24, effRatio: 2 })],
     ['mirage', 'Efficiency', energyUnit({ base: 16 })],
     ['alarm', 'Efficiency', energyUnit({ base: 4 })],
     ['hydroponic', 'Efficiency', energyUnit({ base: 8 })],
@@ -823,6 +842,6 @@ export const statUnit = (machineType: string, stat: 'Performance' | 'Quality' | 
 
 // Energy a day at which a machine counts as cheap to run: Efficiency past that is worth much less on Auto (MachineConfig.cheapEnergyAt)
 export const CHEAP_ENERGY = 4;
-// The Efficiency (AgeWell, Deal Maker: Efficiency + Performance) that gets a machine down to CHEAP_ENERGY a day. Machines that start there
+// The Efficiency (Deal Maker: Efficiency + Performance) that gets a machine down to CHEAP_ENERGY a day. Machines that start there
 // (Water Purifier, Alarm: 4 a day) get a value below 0, so all their Efficiency counts less
 export const cheapEnergyAt = (machineType: string): number | undefined => statUnit(machineType, 'Efficiency')?.toPercent(CHEAP_ENERGY);

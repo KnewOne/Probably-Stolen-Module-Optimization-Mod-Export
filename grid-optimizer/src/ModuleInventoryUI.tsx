@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, forwardRef, useImperativeHandle, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { encodeModExport, boardModules, machineUidKey } from './modExport';
 import { rememberSaveSettings, restoreSaveSettings } from './saveSettings';
-import { ALARM_SURE_STOP, harvestIcon, machineJobKey, alarmStopChance, defaultIgnoreStats, statUnit, defaultMaximizeStats, defaultTargetStats, desequencerDayOptions, desequencerChipsetKey, desequencerAutoDaysKey, statBreakpoints, isDesequencer, isMirage, isMoistureFarm, isAgeWell, sumsPE, jobSteps, isEvaporator, EVAPORATOR_QUALITY_CAP, worthlessBelowSteps, desequencerSpeed, desequencerCutoffs, statHasNoEffect, hiddenStat, statEffect, cheapEnergyAt, moistureFarmOutput, WATER_GRADES, miragePoints, STORE_BASE_ATTRACTIVENESS_KEY } from './machineDefaults';
+import { ALARM_SURE_STOP, harvestIcon, machineJobKey, alarmStopChance, defaultIgnoreStats, statUnit, defaultMaximizeStats, defaultTargetStats, desequencerDayOptions, desequencerChipsetKey, desequencerAutoDaysKey, statBreakpoints, isDesequencer, isMirage, isMoistureFarm, isAgeWell, agewellAging, sumsPE, jobSteps, isEvaporator, EVAPORATOR_QUALITY_CAP, worthlessBelowSteps, desequencerSpeed, desequencerCutoffs, statHasNoEffect, hiddenStat, statEffect, cheapEnergyAt, moistureFarmOutput, WATER_GRADES, miragePoints, STORE_BASE_ATTRACTIVENESS_KEY } from './machineDefaults.ts';
 import { StatGoals } from './components/StatGoals';
 import { readSolver, runSelectedSolver, setSolverLocked, SOLVER_SITES, subscribeSolver } from './solvers';
 import { StatPriorities } from './components/StatPriorities';
@@ -1263,9 +1263,9 @@ export default function ModuleInventoryUI() {
      *   theft     the chance a theft goes through: 100% minus the best Alarm System's stop chance (alarmStopChance). Alarms do not
      *             stack either: the game uses the first unbroken one it finds, so this is the best case
      *   ingots    a Furnace smelts 1 ingot a day from 2 mats (scrap or ore), a Blast module makes it 2 from 3
-     *   power     every machine's energy a day (statUnit Efficiency: the game's rule per machine, AgeWell with its Performance)
-     *   wine      an AgeWell holds 6 bottles and ages them 1 day a night, +1 per full 125% Quality; shown is what the modules add
-     *             a night with every AgeWell full (6 bottles x its extra days)
+     *   power     every machine's energy a day (statUnit Efficiency: the game's rule per machine)
+     *   wine      an AgeWell holds 6 bottles and ages them (1 + floor(Performance / 100)) x (1 + floor(Quality / 50)) days a night (the
+     *             modded rule, agewellAging); shown is what the modules add a night with every AgeWell full (6 bottles x its extra days)
      *   cleaning  the sum of the Water Purifiers' Removal readouts: what each takes out a night from a full 6 L jug of near-clean
      *             water (statUnit Performance)
      *   work      a Desequencer decodes 33 + 33 * Performance / 100 work a day (desequencerSpeed)
@@ -1294,7 +1294,7 @@ export default function ModuleInventoryUI() {
             }
             if (isAgeWell(kind)) {
                 agewells++;
-                agingDays += WINE_PER_AGEWELL * (1 + Math.floor(Math.max(0, q) / 125));
+                agingDays += WINE_PER_AGEWELL * agewellAging(p, q);
             }
             if (name.includes('water purifier')) {
                 purifiers++;
@@ -2332,7 +2332,7 @@ export default function ModuleInventoryUI() {
                             t('{n} AgeWell{s}, {per} bottles each: {bottles} bottles', { n: storeStats.agewells, s: plural(storeStats.agewells), per: WINE_PER_AGEWELL, bottles: storeStats.agewells * WINE_PER_AGEWELL }),
                             t('With all of them full, the modules add {n} aging days a night', { n: storeStats.agingDays - storeStats.agewells * WINE_PER_AGEWELL }),
                             t('({all} in all, against {base} with no modules: 1 day a bottle,', { all: storeStats.agingDays, base: storeStats.agewells * WINE_PER_AGEWELL }),
-                            t('+1 for every full 125% Quality)'),
+                            t('times (1 + a full 100% of Performance) x (1 + a full 50% of Quality))'),
                         ].join('\n')}>
                             <span className="store-stat-label">{t('Wine')}</span>
                             <span className="store-stat-value" style={{ color: '#c25b7f' }}>
@@ -2348,7 +2348,7 @@ export default function ModuleInventoryUI() {
                         </div>
                     )}
                     {storeStats.powered > 0 && (
-                        <div className="store-stat" title={t("Energy a day over {n} machine{s}, by the game's rule for each (Efficiency, and Performance on the AgeWell)", { n: storeStats.powered, s: plural(storeStats.powered) })}>
+                        <div className="store-stat" title={t("Energy a day over {n} machine{s}, by the game's rule for each (Efficiency, and Performance on the Deal Maker)", { n: storeStats.powered, s: plural(storeStats.powered) })}>
                             <span className="store-stat-label">{t('Power')}</span>
                             <span className="store-stat-value" style={{ color: '#f2d24b' }}>{storeStats.power}<span className="store-stat-unit">{t(' / day')}</span></span>
                         </div>
